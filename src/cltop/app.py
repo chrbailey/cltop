@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from datetime import datetime, timezone
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -174,7 +175,7 @@ class CltopApp(App):
 
         # Sort by last activity (most recent first)
         self.fleet.sessions.sort(
-            key=lambda s: s.last_activity or s.started_at or __import__('datetime').datetime.min,
+            key=lambda s: s.last_activity or s.started_at or datetime.min.replace(tzinfo=timezone.utc),
             reverse=True,
         )
 
@@ -255,7 +256,7 @@ class CltopApp(App):
             self.fleet.sessions.sort(key=lambda s: s.display_name.lower())
         else:
             self.fleet.sessions.sort(
-                key=lambda s: s.last_activity or __import__('datetime').datetime.min,
+                key=lambda s: s.last_activity or datetime.min.replace(tzinfo=timezone.utc),
                 reverse=True,
             )
 

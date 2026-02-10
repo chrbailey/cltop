@@ -124,7 +124,7 @@ async def _build_session_from_process(proc_info: dict) -> Session | None:
             source=source,
             status=SessionStatus.UNKNOWN,
             project_dir=cwd,
-            started_at=datetime.fromtimestamp(create_time) if create_time else None,
+            started_at=datetime.fromtimestamp(create_time, tz=timezone.utc) if create_time else None,
             metrics=SessionMetrics(plan_type=detect_plan_type(pid, source.value)),
         )
 
@@ -155,7 +155,7 @@ async def _build_session_from_process(proc_info: dict) -> Session | None:
         branch=branch,
         current_task=session_data['current_task'],
         current_file=session_data['current_file'],
-        started_at=datetime.fromtimestamp(create_time) if create_time else None,
+        started_at=datetime.fromtimestamp(create_time, tz=timezone.utc) if create_time else None,
         last_activity=session_data['last_activity'],
         metrics=metrics,
         recent_tools=session_data['recent_tools'],
@@ -222,7 +222,7 @@ async def _find_session_jsonl(pid: int, cwd: str, cmdline: list[str] | None = No
 
     try:
         proc = psutil.Process(pid)
-        proc_start_time = datetime.fromtimestamp(proc.create_time())
+        proc_start_time = datetime.fromtimestamp(proc.create_time(), tz=timezone.utc)
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return None
 
@@ -237,7 +237,7 @@ async def _find_session_jsonl(pid: int, cwd: str, cmdline: list[str] | None = No
             try:
                 # Verify the file was modified after process started
                 mtime = jsonl.stat().st_mtime
-                if datetime.fromtimestamp(mtime) >= proc_start_time:
+                if datetime.fromtimestamp(mtime, tz=timezone.utc) >= proc_start_time:
                     return jsonl
             except OSError:
                 continue
@@ -249,7 +249,7 @@ async def _find_session_jsonl(pid: int, cwd: str, cmdline: list[str] | None = No
         try:
             mtime = jsonl.stat().st_mtime
             # Only consider files modified after process started
-            if datetime.fromtimestamp(mtime) >= proc_start_time:
+            if datetime.fromtimestamp(mtime, tz=timezone.utc) >= proc_start_time:
                 jsonl_files.append((jsonl, mtime))
         except OSError:
             continue
