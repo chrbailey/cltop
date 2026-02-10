@@ -7,6 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from cltop.hooks import (
+    _safe_write_settings,
     cleanup_stale_status_files,
     is_hook_installed,
     read_hook_status,
@@ -182,3 +183,125 @@ def test_is_hook_installed_false_different_hook(tmp_path: Path):
     with patch("cltop.hooks.SETTINGS_PATH", settings_file):
         with patch("cltop.hooks.HOOK_SCRIPT_PATH", hook_script):
             assert is_hook_installed() is False
+
+
+# --- Security tests for _safe_write_settings ---
+
+
+def test_safe_write_settings_creates_file(tmp_path: Path):
+    """_safe_write_settings writes settings to a new path that didn't exist before."""
+    settings_file = tmp_path / "settings.json"
+
+    with patch("cltop.hooks.SETTINGS_PATH", settings_file):
+        result = _safe_write_settings({"hooks": {}})
+
+    assert result is True
+    assert settings_file.exists()
+    data = json.loads(settings_file.read_text())
+    assert data == {"hooks": {}}
+
+
+def test_safe_write_settings_atomic_rename(tmp_path: Path):
+    """After _safe_write_settings returns True, the final file must exist (no leftover .tmp)."""
+    settings_file = tmp_path / "settings.json"
+
+    with patch("cltop.hooks.SETTINGS_PATH", settings_file):
+        result = _safe_write_settings({"key": "value"})
+
+    assert result is True
+    assert settings_file.exists()
+
+    # No stale .tmp files should remain in the directory
+    tmp_files = list(tmp_path.glob("*.tmp"))
+    assert tmp_files == [], f"Leftover temp files found: {tmp_files}"
+
+    # Verify content is valid JSON with expected data
+    data = json.loads(settings_file.read_text())
+    assert data["key"] == "value"
+
+
+def test_safe_write_settings_returns_false_on_bad_dir(tmp_path: Path):
+    """_safe_write_settings returns False when the directory exists but is unwritable.
+
+    The parent directory must already exist (so mkdir succeeds), but we make
+    the directory unwritable so the lock file open() fails, which is caught
+    by the outer try/except OSError and returns False.
+    """
+    target_dir = tmp_path / "unwritable"
+    target_dir.mkdir()
+    settings_file = target_dir / "settings.json"
+
+    # Make the directory unwritable so the lock file cannot be created
+    target_dir.chmod(0o444)
+
+    try:
+        with patch("cltop.hooks.SETTINGS_PATH", settings_file):
+            result = _safe_write_settings({"hooks": {}})
+
+        assert result is False
+    finally:
+        # Restore permissions so pytest can clean up tmp_path
+        target_dir.chmod(0o755)
+
+    # Verify file was not created (check after restoring permissions)
+    assert not settings_file.exists()
+
+
+# --- Security tests for cleanup_stale_status_files ---
+
+
+def test_cleanup_skips_config_json(tmp_path: Path):
+    """cleanup_stale_status_files must never delete config.json even if it has a stale PID."""
+    fleet_dir = tmp_path / "fleet"
+    fleet_dir.mkdir()
+
+    # config.json contains a PID that is NOT in active_pids — but it must survive
+    config_file = fleet_dir / "config.json"
+    config_file.write_text(json.dumps({"pid": 9999, "some_setting": True}))
+
+    # Also create a normal stale status file that SHOULD be removed
+    stale_file = fleet_dir / "stale_session.json"
+    stale_file.write_text(json.dumps({"pid": 8888}))
+
+    active_pids: set[int] = set()  # No active PIDs
+
+    with patch("cltop.hooks.FLEET_DIR", fleet_dir):
+        removed = cleanup_stale_status_files(active_pids)
+
+    # config.json must survive
+    assert config_file.exists(), "config.json was deleted by cleanup — this is a bug"
+    # The stale session file should have been removed
+    assert not stale_file.exists()
+    assert removed == 1
+
+
+def test_cleanup_validates_pid_type(tmp_path: Path):
+    """A status file with a non-integer pid must not crash cleanup."""
+    fleet_dir = tmp_path / "fleet"
+    fleet_dir.mkdir()
+
+    # Status file where pid is a string instead of int
+    bad_pid_file = fleet_dir / "bad_pid.json"
+    bad_pid_file.write_text(json.dumps({"pid": "not-a-number"}))
+
+    # Status file where pid is null
+    null_pid_file = fleet_dir / "null_pid.json"
+    null_pid_file.write_text(json.dumps({"pid": None}))
+
+    # Status file where pid key is missing entirely
+    no_pid_file = fleet_dir / "no_pid.json"
+    no_pid_file.write_text(json.dumps({"current_task": "something"}))
+
+    active_pids: set[int] = set()
+
+    with patch("cltop.hooks.FLEET_DIR", fleet_dir):
+        # This must not raise — non-integer pids should be silently skipped
+        removed = cleanup_stale_status_files(active_pids)
+
+    # None of these files should have been removed, because the code only
+    # removes files where isinstance(pid, int) and pid not in active_pids.
+    # Non-int pids don't match the condition, so the files are left in place.
+    assert bad_pid_file.exists()
+    assert null_pid_file.exists()
+    assert no_pid_file.exists()
+    assert removed == 0

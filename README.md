@@ -1,112 +1,141 @@
 # cltop
 
-**htop for Claude**
+**Terminal dashboard that monitors all running Claude Code, Claude.app, and Cowork sessions from a single pane.**
 
-Monitor all your Claude Code, Claude.app, and Cowork sessions in a single terminal dashboard.
+Running multiple Claude sessions with no visibility into what each one is doing, how much context it has consumed, or what it costs? cltop discovers Claude processes automatically and displays live status, token usage, task progress, and tool call history in a Textual TUI.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│  cltop — 4 sessions · API: $8.42/$50.00 mo · Max: 3 active     │
-├───┬──────────┬────────────────────┬────────┬─────────┬──────────┤
-│ ● │ PID      │ Project            │ Status │ Tokens  │ Last Act │
-├───┼──────────┼────────────────────┼────────┼─────────┼──────────┤
-│ 🟢│ 96128    │ promptspeak/mcp    │ active │ 48.2K   │ 3s       │
-│ 🟡│ 68625    │ daily-heat         │ think  │ 12.1K   │ 8s       │
-│ 🔵│ cowork-1 │ promptspeak/mcp    │ active │ 6.3K    │ 1s       │
-│ ⚪│ app      │ Claude.app         │ idle   │ —       │ 4m       │
-├───┴──────────┴────────────────────┴────────┴─────────┴──────────┤
-│ ▶ 96128 · promptspeak/mcp-server [main]                        │
-│                                                                 │
-│  Context  ████████████░░░░░░░░  48K/100K             48%       │
-│  Progress ██████████░░░░░░░░░░  3/6 tasks      50%▸est 80%    │
-│  Rate     ██████░░░░░░░░░░░░░░  ~340 req/hr    moderate       │
-│                                                                 │
-│  11:17:32  Read   src/governance/validator.ts                   │
-│  11:17:35  Grep   "validatePolicy" across src/                  │
-│  11:17:38  Edit   validator.ts:42-58                            │
-│  11:17:41  Bash   npm test                                      │
-└─────────────────────────────────────────────────────────────────┘
-```
 
-## Quick Start
+## When to use cltop
+
+- You have 2+ Claude Code sessions running and need to see which ones are active, idle, or blocked waiting for input.
+- You want to track API spend across sessions against a monthly budget.
+- You need to kill a runaway Claude session without hunting through terminal tabs.
+- You want to watch tool call history (Read, Edit, Bash, Grep) in real time to understand what a session is doing.
+
+
+## Install
 
 ```bash
 pip install cltop
 cltop
 ```
 
-Zero config. Works immediately if Claude is running.
+Zero configuration. If any Claude process is running, cltop finds it.
 
-## How It Works
+For richer session data (exact task descriptions, file context, precise token counts):
 
-Two-layer architecture:
+```bash
+cltop install-hook
+```
 
-**Layer 1 (Passive)** — Discovers Claude processes via `ps`, reads session transcripts from `~/.claude/projects/`. No setup needed. Gets you: session list, status, rough token estimates, recent tool calls.
+This registers a PostToolUse hook in `~/.claude/settings.json`. Restart running Claude Code sessions for the hook to take effect.
 
-**Layer 2 (Hooks)** — Optional. Run `cltop install-hook` to add a Claude Code PostToolUse hook that writes rich status data. Gets you: exact task descriptions, current file, precise token counts, task progress.
 
-## What It Monitors
+## What you see
 
-- Claude Code CLI sessions
-- Claude.app desktop sessions
-- Cowork/background agents
-- Distinguishes Max plan (rate tracking) from API (cost tracking)
+The TUI has three regions:
+
+**Fleet table** (top) -- One row per discovered session showing PID, project name, status indicator (active / thinking / idle / blocked / background), token count, and time since last activity.
+
+**Metrics bar** (middle) -- Three progress bars for the selected session: context window usage (tokens used vs max), task progress (completed vs total), and rate or cost (requests/hr for Max plan, dollars vs budget for API plan).
+
+**Detail panel** (bottom) -- Project path, git branch, current task description, and a scrolling log of recent tool calls with timestamps.
+
+An SVG recording of the TUI exists in the repository (`demo.svg`).
+
+
+## Two-layer architecture
+
+**Layer 1: Passive discovery (no setup)**
+Finds Claude processes via `ps` / psutil, then reads session transcripts from `~/.claude/projects/` to extract status, token estimates, tool call history, and task progress. Works immediately.
+
+**Layer 2: Hook enrichment (optional)**
+A PostToolUse hook (`cltop install-hook`) writes structured JSON status files to `~/.claude/fleet/` on every tool call. This adds: exact task descriptions, current file being edited, precise token counts, and TodoList-derived progress tracking. The hook is a bash script that requires `jq`.
+
+
+## CLI reference
+
+| Command | What it does |
+|---------|-------------|
+| `cltop` | Launch the dashboard |
+| `cltop install-hook` | Deploy the PostToolUse hook for richer session data |
+| `cltop uninstall-hook` | Remove the hook from `~/.claude/settings.json` |
+| `cltop budget api <amount>` | Set monthly API spend budget in dollars (persisted to `~/.claude/fleet/config.json`) |
+| `cltop --version` | Print version |
+| `cltop --help` | Print usage summary |
+
 
 ## Keybindings
 
 | Key | Action |
 |-----|--------|
-| `↑↓` | Navigate sessions |
-| `k` | Kill selected session |
-| `h` | Show hook status |
-| `s` | Sort by activity/tokens/cost |
+| Up / Down | Navigate sessions in fleet table |
+| `k` | Kill selected session (modal confirmation, sends SIGTERM) |
+| `h` | Toggle hook install/uninstall |
+| `s` | Cycle sort order: activity, tokens, project |
+| `r` | Force immediate refresh |
 | `q` | Quit |
 
-## Metrics
 
-The tri-bar shows three critical dimensions:
+## Data model
 
-- **Context**: Tokens used vs context window size
-- **Progress**: Tasks completed vs total (when available from hooks or TodoList)
-- **Rate/Cost**: Requests per hour (Max plan) or dollars spent vs budget (API)
+Each discovered session tracks:
 
-## Status: Alpha
+| Field | Source | Description |
+|-------|--------|-------------|
+| `id` | Layer 1 | Process PID or session hash |
+| `pid` | Layer 1 | OS process ID |
+| `source` | Layer 1 | `claude_code`, `claude_app`, `cowork`, or `api` |
+| `status` | Layer 1 | `active` (<10s), `thinking`, `idle` (>30s), `blocked`, `background`, `unknown` |
+| `project_dir` | Layer 1 | Working directory |
+| `branch` | Layer 1 | Git branch (detected via `git -C`) |
+| `tokens_used` | Layer 1 (estimated from JSONL size) or Layer 2 (precise) | Token count |
+| `tokens_max` | Default | Context window size (default 200K) |
+| `current_task` | Layer 1 (from assistant messages) or Layer 2 (from hook) | What the session is working on |
+| `current_file` | Layer 1 or Layer 2 | File being read/edited |
+| `requests_per_hour` | Layer 1 | Estimated from assistant message timestamps |
+| `cost_dollars` | Layer 1 | Estimated API cost (Sonnet default pricing) |
+| `tasks_completed` / `tasks_total` | Layer 1 (TaskUpdate parsing) or Layer 2 | Progress from TodoList |
+| `recent_tools` | Layer 1 | Last ~30 tool calls with timestamps and summaries |
+| `has_hook` | Layer 2 | Whether enriched hook data is available |
 
-This is v0.1.0. It works but it's rough around the edges.
+Plan detection: Claude Code CLI, Claude.app, and Cowork sessions default to Max plan (rate-tracked). Unknown sources default to API plan (cost-tracked).
 
-**What works:**
-- Process discovery
-- JSONL parsing from Claude session transcripts
-- TUI display with real-time updates
-- Hook system for rich session metadata
+
+## Requirements
+
+- Python 3.11+
+- macOS or Linux (relies on `ps` and Unix process model)
+- Runtime dependencies: `textual` (>=0.50), `psutil` (>=5.9), `watchfiles` (>=0.20)
+- Optional: `jq` (required by the Layer 2 hook script)
+
+
+## Status: alpha (v0.1.0)
+
+**Works now:**
+- Automatic discovery of Claude Code CLI, Claude.app, and Cowork sessions
+- JSONL transcript parsing for status, tokens, tool history, and task progress
+- TUI with real-time updates (3-second poll interval)
+- PostToolUse hook system for enriched metadata
+- Session kill with TOCTOU-safe PID verification
+- Atomic config writes with file locking
 
 **Known limitations:**
-- Token estimates are rough without hooks installed
-- Claude.app session detail is limited (desktop app is more opaque)
-- No Windows support yet (relies on `ps` and Unix process model)
-- Polls filesystem instead of real-time watching (watchfiles integration coming)
+- Token estimates are rough without the hook installed (heuristic: ~3.5 bytes per token from JSONL file size)
+- Claude.app sessions are more opaque than CLI sessions (less transcript data available)
+- No Windows support
+- Filesystem polling at 3s intervals (watchfiles integration planned but not yet wired up)
+- JSONL discovery caps at 50 candidates to prevent slow directory walks
 
-**What's next:**
-- Real-time filesystem watching (currently polls every 2s)
-- Multi-machine fleet support (monitor remote Claude sessions)
-- Improved token estimation heuristics
-- Plugin support for custom metrics
 
-## Tech Stack
+## Security
 
-Python, Textual, psutil, watchfiles. Three runtime dependencies.
+- The kill command re-verifies that the target PID still belongs to a Claude process before sending SIGTERM (TOCTOU guard).
+- Hook status files are written with `umask 077` (owner-only).
+- Settings.json writes use `flock` + atomic temp-file rename to prevent corruption from concurrent access.
+- Config writes (budget) use atomic temp-file rename.
+- No network calls. All data is local filesystem and process table.
 
-## Install from Source
-
-```bash
-git clone https://github.com/yourusername/cltop.git
-cd cltop
-pip install -e ".[dev]"
-```
-
-## Contributing
-
-Issues and PRs welcome. This project follows conventional commits.
 
 ## License
 

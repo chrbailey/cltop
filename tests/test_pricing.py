@@ -132,3 +132,23 @@ def test_format_tokens_millions():
     assert format_tokens(1_000_000) == "1.0M"
     assert format_tokens(1_500_000) == "1.5M"
     assert format_tokens(12_345_678) == "12.3M"
+
+
+# --- Security tests for negative token clamping ---
+
+
+def test_estimate_tokens_negative_bytes():
+    """Negative byte input must return 0, not a negative token count."""
+    result = estimate_tokens_from_bytes(-100)
+    assert result == 0
+    result = estimate_tokens_from_bytes(-1)
+    assert result == 0
+    # Large negative value
+    result = estimate_tokens_from_bytes(-999_999_999)
+    assert result == 0
+
+
+def test_estimate_tokens_zero_bytes():
+    """Zero byte input returns exactly 0 tokens."""
+    result = estimate_tokens_from_bytes(0)
+    assert result == 0
