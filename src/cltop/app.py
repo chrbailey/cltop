@@ -5,6 +5,8 @@ from __future__ import annotations
 import sys
 from datetime import datetime, timezone
 
+import psutil
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
@@ -217,8 +219,26 @@ class CltopApp(App):
             import os
             import signal
             try:
+                # Re-verify PID still belongs to a Claude process (TOCTOU guard)
+                proc = psutil.Process(session.pid)
+                name = proc.name()
+                if name == 'Claude':
+                    # Verify it's the main app, not a Helper
+                    try:
+                        exe = proc.exe()
+                        if 'Helper' in exe or exe != '/Applications/Claude.app/Contents/MacOS/Claude':
+                            self.notify(f"PID {session.pid} is a helper process, not killing", severity="warning")
+                            return
+                    except (psutil.AccessDenied, psutil.NoSuchProcess):
+                        self.notify(f"Cannot verify PID {session.pid}", severity="warning")
+                        return
+                elif name != 'claude':
+                    self.notify(f"PID {session.pid} is no longer a Claude process", severity="warning")
+                    return
                 os.kill(session.pid, signal.SIGTERM)
                 self.notify(f"Sent SIGTERM to PID {session.pid}")
+            except psutil.NoSuchProcess:
+                self.notify(f"PID {session.pid} already exited", severity="warning")
             except ProcessLookupError:
                 self.notify(f"PID {session.pid} already exited", severity="warning")
             except PermissionError:
@@ -361,7 +381,11 @@ def _deploy_hook_script() -> None:
 def _set_api_budget(amount: float) -> None:
     """Persist API budget to a config file."""
     import json
+    import tempfile
     from pathlib import Path
+
+    if amount < 0:
+        raise ValueError("Budget amount must be non-negative")
 
     config_path = Path.home() / ".claude" / "fleet" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -371,15 +395,28 @@ def _set_api_budget(amount: float) -> None:
         try:
             config = json.loads(config_path.read_text())
         except json.JSONDecodeError:
-            pass
+            pass  # Start fresh — config.json is ours, not shared
 
     config["api_budget_monthly"] = amount
-    config_path.write_text(json.dumps(config, indent=2))
+
+    # Atomic write via temp file + rename
+    fd = tempfile.NamedTemporaryFile(
+        mode="w", dir=config_path.parent, suffix=".tmp", delete=False
+    )
+    json.dump(config, fd, indent=2)
+    fd.flush()
+    fd.close()
+    Path(fd.name).rename(config_path)
 
 
 _INLINE_HOOK_SCRIPT = """#!/bin/bash
 # cltop PostToolUse hook — writes session status to ~/.claude/fleet/
 set -euo pipefail
+
+umask 077  # Status files contain work context — owner-only
+
+# Verify jq is available
+command -v jq >/dev/null 2>&1 || exit 0
 
 FLEET_DIR="$HOME/.claude/fleet"
 mkdir -p "$FLEET_DIR"
@@ -387,10 +424,10 @@ mkdir -p "$FLEET_DIR"
 # Read tool call data from stdin
 INPUT=$(cat)
 
-# Extract session ID (prefer env var, fallback to PID)
-SESSION_ID="${CLAUDE_SESSION_ID:-$$}"
+# Extract session ID (prefer env var, fallback to parent PID which is Claude Code)
+SESSION_ID="${CLAUDE_SESSION_ID:-$PPID}"
 
-# Extract fields with jq
+# Extract fields with jq (with defaults for missing fields)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool // "unknown"')
 CURRENT_TASK=$(echo "$INPUT" | jq -r '.context.current_task // ""')
 PROJECT_DIR=$(echo "$INPUT" | jq -r '.context.project_dir // ""')
@@ -398,7 +435,7 @@ PROJECT_DIR=$(echo "$INPUT" | jq -r '.context.project_dir // ""')
 # Write status file using jq for proper JSON escaping
 jq -n \\
   --arg session_id "$SESSION_ID" \\
-  --argjson pid "$$" \\
+  --argjson pid "$PPID" \\
   --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \\
   --arg project_dir "$PROJECT_DIR" \\
   --arg current_task "$CURRENT_TASK" \\

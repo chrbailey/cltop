@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
-import subprocess
-from collections.abc import AsyncIterator
 from datetime import datetime, timezone
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
+
+_MAX_JSONL_CANDIDATES = 50  # Cap rglob results to prevent runaway directory walks
 
 import psutil
 
@@ -29,9 +32,9 @@ async def discover_sessions() -> list[Session]:
             session = await _build_session_from_process(proc_info)
             if session:
                 sessions.append(session)
-        except Exception as e:
+        except Exception:
             # Don't crash the whole scan if one session fails
-            print(f"Warning: Failed to discover session for PID {proc_info['pid']}: {e}")
+            logger.debug("Failed to discover session for PID %s", proc_info.get('pid'))
             continue
 
     return sessions
@@ -243,12 +246,15 @@ async def _find_session_jsonl(pid: int, cwd: str, cmdline: list[str] | None = No
                 continue
 
     # Fall back to time-based heuristic
-    # Find all .jsonl files modified after process started
+    # Find .jsonl files modified after process started (capped to prevent runaway walks)
     jsonl_files: list[tuple[Path, float]] = []
+    files_scanned = 0
     for jsonl in claude_dir.rglob('*.jsonl'):
+        files_scanned += 1
+        if files_scanned > _MAX_JSONL_CANDIDATES:
+            break
         try:
             mtime = jsonl.stat().st_mtime
-            # Only consider files modified after process started
             if datetime.fromtimestamp(mtime, tz=timezone.utc) >= proc_start_time:
                 jsonl_files.append((jsonl, mtime))
         except OSError:
@@ -678,11 +684,11 @@ async def _detect_git_branch(project_dir: str) -> str:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await result.communicate()
+        stdout, _ = await asyncio.wait_for(result.communicate(), timeout=3.0)
 
         if result.returncode == 0:
             return stdout.decode().strip()
-    except Exception:
+    except (asyncio.TimeoutError, Exception):
         pass
 
     return ''

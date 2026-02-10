@@ -9,14 +9,19 @@
 
 set -euo pipefail
 
+umask 077  # Status files contain work context — owner-only
+
+# Verify jq is available — exit silently if missing
+command -v jq >/dev/null 2>&1 || exit 0
+
 FLEET_DIR="$HOME/.claude/fleet"
 mkdir -p "$FLEET_DIR"
 
 # Read tool call JSON from stdin
 TOOL_DATA=$(cat)
 
-# Extract session ID (prefer env var, fallback to PID)
-SESSION_ID="${CLAUDE_SESSION_ID:-$$}"
+# Extract session ID (prefer env var, fallback to parent PID which is Claude Code)
+SESSION_ID="${CLAUDE_SESSION_ID:-$PPID}"
 
 # Extract fields with jq (with defaults for missing fields)
 TOOL_NAME=$(echo "$TOOL_DATA" | jq -r '.tool // "unknown"')
@@ -27,17 +32,17 @@ TOKENS=$(echo "$TOOL_DATA" | jq -r '.context.tokens_estimate // 0')
 TASKS_COMPLETED=$(echo "$TOOL_DATA" | jq -r '.context.tasks_completed // 0')
 TASKS_TOTAL=$(echo "$TOOL_DATA" | jq -r '.context.tasks_total // 0')
 
-# Build tool args summary
+# Build tool args summary (extract basename via jq to avoid shell quoting issues)
 TOOL_ARGS_SUMMARY=""
 if [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "Read" ] || [ "$TOOL_NAME" = "Write" ]; then
-    TOOL_ARGS_SUMMARY=$(echo "$TOOL_DATA" | jq -r '.args.file_path // ""' | xargs basename 2>/dev/null || true)
+    TOOL_ARGS_SUMMARY=$(echo "$TOOL_DATA" | jq -r '.args.file_path // "" | split("/") | last')
 fi
 
 # Write status file using jq for proper JSON escaping
 STATUS_FILE="$FLEET_DIR/$SESSION_ID.json"
 jq -n \
   --arg session_id "$SESSION_ID" \
-  --argjson pid "$$" \
+  --argjson pid "$PPID" \
   --arg timestamp "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   --arg project_dir "$PROJECT_DIR" \
   --arg current_task "$CURRENT_TASK" \

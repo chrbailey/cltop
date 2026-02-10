@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import fcntl
 import json
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -12,6 +14,39 @@ from .models import Session
 FLEET_DIR = Path.home() / ".claude" / "fleet"
 SETTINGS_PATH = Path.home() / ".claude" / "settings.json"
 HOOK_SCRIPT_PATH = FLEET_DIR / "post_tool_use.sh"
+
+
+def _safe_write_settings(settings: dict) -> bool:
+    """Atomic, locked write of settings.json.
+
+    Uses flock + temp file + rename to prevent corruption from concurrent writes
+    (e.g., Claude Code writing settings at the same moment).
+    """
+    lock_path = SETTINGS_PATH.with_suffix(".json.lock")
+    SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with open(lock_path, "w") as lock_fd:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX)
+            try:
+                fd = tempfile.NamedTemporaryFile(
+                    mode="w", dir=SETTINGS_PATH.parent, suffix=".tmp", delete=False
+                )
+                tmp_path = Path(fd.name)
+                json.dump(settings, fd, indent=2)
+                fd.flush()
+                fd.close()
+                tmp_path.rename(SETTINGS_PATH)
+                return True
+            except OSError:
+                try:
+                    tmp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+                return False
+            finally:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    except OSError:
+        return False
 
 
 def read_hook_status(session_id: str) -> dict | None:
@@ -99,9 +134,10 @@ def install_hook() -> bool:
         try:
             with SETTINGS_PATH.open() as f:
                 settings = json.load(f)
-        except (json.JSONDecodeError, OSError):
-            # Corrupt settings — start fresh
-            settings = {}
+        except json.JSONDecodeError:
+            return False  # Refuse to overwrite corrupt settings
+        except OSError:
+            return False
 
     # Ensure hooks object exists
     if "hooks" not in settings:
@@ -121,13 +157,8 @@ def install_hook() -> bool:
     # Append our hook
     settings["hooks"]["PostToolUse"].append(hook_entry)
 
-    # Write back
-    try:
-        with SETTINGS_PATH.open("w") as f:
-            json.dump(settings, f, indent=2)
-        return True
-    except OSError:
-        return False
+    # Atomic locked write
+    return _safe_write_settings(settings)
 
 
 def uninstall_hook() -> bool:
@@ -142,7 +173,7 @@ def uninstall_hook() -> bool:
         with SETTINGS_PATH.open() as f:
             settings = json.load(f)
     except (json.JSONDecodeError, OSError):
-        return False
+        return False  # Refuse to overwrite corrupt settings
 
     # Remove our hook entry
     hook_entry = {
@@ -162,13 +193,8 @@ def uninstall_hook() -> bool:
         if not settings["hooks"]:
             del settings["hooks"]
 
-    # Write back
-    try:
-        with SETTINGS_PATH.open("w") as f:
-            json.dump(settings, f, indent=2)
-        return True
-    except OSError:
-        return False
+    # Atomic locked write
+    return _safe_write_settings(settings)
 
 
 def is_hook_installed() -> bool:
@@ -194,6 +220,9 @@ def is_hook_installed() -> bool:
     )
 
 
+_NON_STATUS_FILES = {"config.json"}
+
+
 def cleanup_stale_status_files(active_pids: set[int]) -> int:
     """Remove status files for sessions that are no longer running.
 
@@ -208,9 +237,15 @@ def cleanup_stale_status_files(active_pids: set[int]) -> int:
 
     removed = 0
     for status_file in FLEET_DIR.glob("*.json"):
-        status = read_hook_status(status_file.stem)
-        if status is None:
-            # Corrupt file — remove it
+        # Skip non-status files (config.json, lock files, etc.)
+        if status_file.name in _NON_STATUS_FILES:
+            continue
+
+        try:
+            with status_file.open() as f:
+                status = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # Corrupt status file — remove it
             try:
                 status_file.unlink()
                 removed += 1
@@ -220,7 +255,7 @@ def cleanup_stale_status_files(active_pids: set[int]) -> int:
 
         # Check if the PID is still active
         pid = status.get("pid")
-        if pid is not None and pid not in active_pids:
+        if isinstance(pid, int) and pid not in active_pids:
             try:
                 status_file.unlink()
                 removed += 1

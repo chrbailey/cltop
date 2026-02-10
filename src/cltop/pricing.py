@@ -21,7 +21,7 @@ BYTES_PER_TOKEN = 3.5
 
 def estimate_tokens_from_bytes(byte_count: int) -> int:
     """Rough token estimate from JSONL file size."""
-    return int(byte_count / BYTES_PER_TOKEN)
+    return max(0, int(byte_count / BYTES_PER_TOKEN))
 
 
 def estimate_cost(
