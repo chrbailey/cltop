@@ -5,6 +5,9 @@
 Running multiple Claude sessions with no visibility into what each one is doing, how much context it has consumed, or what it costs? cltop discovers Claude processes automatically and displays live status, token usage, task progress, and tool call history in a Textual TUI.
 
 
+![cltop demo](demo/demo.svg)
+
+
 ## When to use cltop
 
 - You have 2+ Claude Code sessions running and need to see which ones are active, idle, or blocked waiting for input.
@@ -40,8 +43,6 @@ The TUI has three regions:
 **Metrics bar** (middle) -- Three progress bars for the selected session: context window usage (tokens used vs max), task progress (completed vs total), and rate or cost (requests/hr for Max plan, dollars vs budget for API plan).
 
 **Detail panel** (bottom) -- Project path, git branch, current task description, and a scrolling log of recent tool calls with timestamps.
-
-An SVG recording of the TUI exists in the repository (`demo.svg`).
 
 
 ## Two-layer architecture
