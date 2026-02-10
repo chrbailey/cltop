@@ -38,8 +38,9 @@ if [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "Read" ] || [ "$TOOL_NAME" = "W
     TOOL_ARGS_SUMMARY=$(echo "$TOOL_DATA" | jq -r '.args.file_path // "" | split("/") | last')
 fi
 
-# Write status file using jq for proper JSON escaping
+# Write status file atomically (temp + mv prevents partial reads)
 STATUS_FILE="$FLEET_DIR/$SESSION_ID.json"
+TEMP_FILE=$(mktemp "$FLEET_DIR/.tmp.XXXXXX")
 jq -n \
   --arg session_id "$SESSION_ID" \
   --argjson pid "$PPID" \
@@ -64,4 +65,4 @@ jq -n \
     tokens_estimate: $tokens_estimate,
     tasks_completed: $tasks_completed,
     tasks_total: $tasks_total
-  }' > "$STATUS_FILE"
+  }' > "$TEMP_FILE" && mv "$TEMP_FILE" "$STATUS_FILE"

@@ -40,8 +40,8 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/christopherbailey/cltop"
-Repository = "https://github.com/christopherbailey/cltop"
+Homepage = "https://github.com/chrbailey/cltop"
+Repository = "https://github.com/chrbailey/cltop"
 
 [project.scripts]
 cltop = "cltop.app:main"

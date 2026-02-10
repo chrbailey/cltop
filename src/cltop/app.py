@@ -363,6 +363,11 @@ def _deploy_hook_script() -> None:
     import shutil
 
     fleet_dir = Path.home() / ".claude" / "fleet"
+
+    # Refuse if fleet_dir is a symlink (prevents symlink attack to privileged dirs)
+    if fleet_dir.is_symlink():
+        raise RuntimeError(f"{fleet_dir} is a symlink — refusing to write hook script")
+
     fleet_dir.mkdir(parents=True, exist_ok=True)
 
     dest = fleet_dir / "post_tool_use.sh"
@@ -384,8 +389,8 @@ def _set_api_budget(amount: float) -> None:
     import tempfile
     from pathlib import Path
 
-    if amount < 0:
-        raise ValueError("Budget amount must be non-negative")
+    if amount < 0 or amount > 1_000_000:
+        raise ValueError("Budget must be between $0 and $1,000,000")
 
     config_path = Path.home() / ".claude" / "fleet" / "config.json"
     config_path.parent.mkdir(parents=True, exist_ok=True)
@@ -432,7 +437,8 @@ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool // "unknown"')
 CURRENT_TASK=$(echo "$INPUT" | jq -r '.context.current_task // ""')
 PROJECT_DIR=$(echo "$INPUT" | jq -r '.context.project_dir // ""')
 
-# Write status file using jq for proper JSON escaping
+# Write status file atomically (temp + mv prevents partial reads)
+TEMP_FILE=$(mktemp "$FLEET_DIR/.tmp.XXXXXX")
 jq -n \\
   --arg session_id "$SESSION_ID" \\
   --argjson pid "$PPID" \\
@@ -447,7 +453,7 @@ jq -n \\
     project_dir: $project_dir,
     current_task: $current_task,
     tool_name: $tool_name
-  }' > "$FLEET_DIR/$SESSION_ID.json"
+  }' > "$TEMP_FILE" && mv "$TEMP_FILE" "$FLEET_DIR/$SESSION_ID.json"
 """
 
 

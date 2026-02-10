@@ -236,7 +236,10 @@ def cleanup_stale_status_files(active_pids: set[int]) -> int:
         return 0
 
     removed = 0
-    for status_file in FLEET_DIR.glob("*.json"):
+    _MAX_STATUS_FILES = 200
+    for i, status_file in enumerate(FLEET_DIR.glob("*.json")):
+        if i >= _MAX_STATUS_FILES:
+            break
         # Skip non-status files (config.json, lock files, etc.)
         if status_file.name in _NON_STATUS_FILES:
             continue

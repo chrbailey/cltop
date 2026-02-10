@@ -6,12 +6,15 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _MAX_JSONL_CANDIDATES = 50  # Cap rglob results to prevent runaway directory walks
+_MAX_JSONL_SIZE = 100_000_000  # 100 MB — skip absurdly large JSONL files
+_UUID_PATTERN = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$', re.IGNORECASE)
 
 import psutil
 
@@ -202,8 +205,8 @@ def _extract_session_id_from_cmdline(cmdline: list[str]) -> str | None:
     for i, arg in enumerate(cmdline):
         if arg == '--resume' and i + 1 < len(cmdline):
             candidate = cmdline[i + 1]
-            # Session IDs are UUIDs (36 chars, 4 hyphens)
-            if len(candidate) == 36 and candidate.count('-') == 4:
+            # Session IDs are UUIDs — validate hex chars to prevent path traversal
+            if len(candidate) == 36 and _UUID_PATTERN.match(candidate):
                 return candidate
     return None
 
@@ -287,6 +290,9 @@ async def _parse_session_jsonl(jsonl_path: Path) -> dict:
 
     try:
         file_size = jsonl_path.stat().st_size
+        if file_size > _MAX_JSONL_SIZE:
+            logger.debug("JSONL file %s too large (%d bytes), skipping", jsonl_path, file_size)
+            return _empty_session_data()
         with open(jsonl_path, 'rb') as f:
             # Seek to end - tail_bytes
             seek_pos = max(0, file_size - tail_bytes)
