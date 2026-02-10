@@ -257,10 +257,11 @@ class CltopApp(App):
             else:
                 self.notify("Failed to uninstall hook", severity="error")
         else:
+            _deploy_hook_script()
             if install_hook():
                 self.notify("Hook installed — restart Claude Code sessions for effect")
             else:
-                self.notify("Failed to install hook (is hook script deployed?)", severity="error")
+                self.notify("Failed to install hook", severity="error")
 
     def action_cycle_sort(self) -> None:
         """Cycle sort order: activity → tokens → project."""
